@@ -380,6 +380,7 @@ export function Chat() {
                 <>
                   {isInEditMode && index === 0 && <CodeToEditCard />}
                   <ContinueInputBox
+                    isEditMode={isInEditMode}
                     onEnter={(editorState, modifiers, editor) =>
                       sendInput(editorState, modifiers, editor, index)
                     }
@@ -453,7 +454,6 @@ export function Chat() {
           trackVisibility={isStreaming}
         />
       </StepsDiv>
-
       <div className={`relative`}>
         <div className="absolute -top-8 right-2 z-30">
           {ttsActive && (
@@ -534,11 +534,12 @@ export function Chat() {
               }}
             />
           )}
+
           {history.length === 0 && (
             <>
               {onboardingCard.show && (
                 <div className="mx-2 mt-10">
-                  <OnboardingCard activeTab={onboardingCard.activeTab} />
+                  <OnboardingCard />
                 </div>
               )}
 
@@ -551,6 +552,7 @@ export function Chat() {
           )}
         </div>
       </div>
+
       <div
         className={`${history.length === 0 ? "h-full" : ""} flex flex-col justify-end`}
       >

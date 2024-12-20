@@ -30,14 +30,22 @@ import { logDevData } from "./util/devdata";
 import { DevDataSqliteDb } from "./util/devdataSqlite";
 import { GlobalContext } from "./util/GlobalContext";
 import historyManager from "./util/history";
-import { editConfigJson, setupInitialDotContinueDirectory } from "./util/paths";
+import {
+  editConfigJson,
+  getConfigJsonPath,
+  setupInitialDotContinueDirectory,
+} from "./util/paths";
 import { Telemetry } from "./util/posthog";
 import { getSymbolsForManyFiles } from "./util/treeSitter";
 import { TTS } from "./util/tts";
 
-import type { ContextItemId, IDE, IndexingProgressUpdate } from ".";
+import { type ContextItemId, type IDE, type IndexingProgressUpdate } from ".";
 import type { FromCoreProtocol, ToCoreProtocol } from "./protocol";
+
+import { SYSTEM_PROMPT_DOT_FILE } from "./config/getSystemPromptDotFile";
 import type { IMessenger, Message } from "./protocol/messenger";
+import * as URI from "uri-js";
+import { localPathToUri } from "./util/pathToUri";
 
 export class Core {
   // implements IMessenger<ToCoreProtocol, FromCoreProtocol>
@@ -72,7 +80,7 @@ export class Core {
     data: FromCoreProtocol[T][0],
     messageId?: string,
   ): string {
-    return this.messenger.send(messageType, data);
+    return this.messenger.send(messageType, data, messageId);
   }
 
   // TODO: It shouldn't actually need an IDE type, because this can happen
@@ -182,6 +190,8 @@ export class Core {
 
     const on = this.messenger.on.bind(this.messenger);
 
+    // Note, VsCode's in-process messenger doesn't do anything with this
+    // It will only show for jetbrains
     this.messenger.onError((err) => {
       console.error(err);
       void Telemetry.capture("core_messenger_error", {
@@ -234,11 +244,6 @@ export class Core {
     on("config/addModel", (msg) => {
       const model = msg.data.model;
       addModel(model, msg.data.role);
-      void this.configHandler.reloadConfig();
-    });
-
-    on("config/addOpenAiKey", (msg) => {
-      addOpenAIKey(msg.data);
       void this.configHandler.reloadConfig();
     });
 
@@ -701,11 +706,6 @@ export class Core {
       const dirs = data?.dirs ?? (await this.ide.getWorkspaceDirs());
       await this.refreshCodebaseIndex(dirs);
     });
-    on("index/forceReIndexFiles", async ({ data }) => {
-      if (data?.files?.length) {
-        await this.refreshCodebaseIndexFiles(data.files);
-      }
-    });
     on("index/setPaused", (msg) => {
       this.globalContext.update("indexingPaused", msg.data);
       this.indexingPauseToken.paused = msg.data;
@@ -718,6 +718,66 @@ export class Core {
           "indexProgress",
           this.codebaseIndexingState,
         );
+      }
+    });
+
+    // File changes
+    // TODO - remove remaining logic for these from IDEs where possible
+    on("files/changed", async ({ data }) => {
+      if (data?.uris?.length) {
+        for (const uri of data.uris) {
+          // Listen for file changes in the workspace
+          // URI TODO is this equality statement valid?
+          if (URI.equal(uri, localPathToUri(getConfigJsonPath()))) {
+            // Trigger a toast notification to provide UI feedback that config has been updated
+            const showToast =
+              this.globalContext.get("showConfigUpdateToast") ?? true;
+            if (showToast) {
+              const selection = await this.ide.showToast(
+                "info",
+                "Config updated",
+                "Don't show again",
+              );
+              if (selection === "Don't show again") {
+                this.globalContext.update("showConfigUpdateToast", false);
+              }
+            }
+          }
+
+          if (
+            uri.endsWith(".continuerc.json") ||
+            uri.endsWith(".prompt") ||
+            uri.endsWith(SYSTEM_PROMPT_DOT_FILE)
+          ) {
+            await this.configHandler.reloadConfig();
+          } else if (
+            uri.endsWith(".continueignore") ||
+            uri.endsWith(".gitignore")
+          ) {
+            // Reindex the workspaces
+            this.invoke("index/forceReIndex", undefined);
+          } else {
+            // Reindex the file
+            await this.refreshCodebaseIndexFiles([uri]);
+          }
+        }
+      }
+    });
+
+    on("files/created", async ({ data }) => {
+      if (data?.uris?.length) {
+        await this.refreshCodebaseIndexFiles(data.uris);
+      }
+    });
+
+    on("files/deleted", async ({ data }) => {
+      if (data?.uris?.length) {
+        await this.refreshCodebaseIndexFiles(data.uris);
+      }
+    });
+    on("files/opened", async ({ data }) => {
+      if (data?.uris?.length) {
+        // Do something on files opened
       }
     });
 
